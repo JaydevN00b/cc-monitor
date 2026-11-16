@@ -23,15 +23,23 @@ It shows subscription usage, not dollar cost. No dollar figures appear anywhere.
 Requires Node 18+ and Claude Code. Works on Windows, macOS and Linux.
 
 ```sh
-npx cc-monitor install   # wire the hooks + status line into ~/.claude/settings.json
-npx cc-monitor           # start the server and open the window
+npx cc-live-monitor install   # wire the hooks + status line into ~/.claude/settings.json
+npx cc-live-monitor           # start the server and open the window
+```
+
+Or install it globally to get a short `cc-monitor` command:
+
+```sh
+npm install -g cc-live-monitor
+cc-monitor install
+cc-monitor
 ```
 
 Restart any Claude Code sessions that were already running so they pick up the hooks.
 
 `install` first backs up `~/.claude/settings.json` to `~/.cc-monitor/backups/`. It then:
 
-- copies two small forwarder scripts to `~/.cc-monitor/bin/` (a stable path, so it still works after the npx cache is cleared)
+- copies two small forwarder scripts to `~/.cc-monitor/bin/` (a stable path, so the hooks keep working even after the npx cache is cleared)
 - appends one hook entry for `SessionStart`, `PreToolUse`, `PostToolUse`, `SubagentStop`, `Stop` and `SessionEnd`. Your existing hooks are left alone
 - sets `statusLine` to cc-monitor's script. If you already had a status line, it is remembered and **chained**: yours still runs and its output is what you see
 
@@ -40,7 +48,7 @@ Running `install` again is safe. It never adds duplicates.
 ## Uninstall
 
 ```sh
-npx cc-monitor uninstall
+npx cc-live-monitor uninstall
 ```
 
 This removes only cc-monitor's hook entries and puts your previous status line back (or removes the key if you had none). A backup is taken first. You can then delete `~/.cc-monitor/`.
