@@ -1,11 +1,40 @@
 # cc-monitor
 
+[![npm](https://img.shields.io/npm/v/cc-live-monitor?color=FF4D1A&label=npm%20cc-live-monitor)](https://www.npmjs.com/package/cc-live-monitor)
+![node](https://img.shields.io/badge/node-%3E%3D18-black)
+![platforms](https://img.shields.io/badge/windows%20%7C%20macOS%20%7C%20linux-black)
+
 A live session monitor for [Claude Code](https://claude.com/claude-code) that runs in its own small window next to your terminal. Every display is a dot-matrix readout: your subscription limits, context, tokens per minute, models, agents and file changes, all updating as Claude works.
 
-![cc-monitor screenshot](docs/screenshot.png)
-<!-- screenshot placeholder: add docs/screenshot.png -->
+## Quick start
 
-It shows subscription usage, not dollar cost. No dollar figures appear anywhere.
+```sh
+npx cc-live-monitor install   # once: adds the hooks + status line to Claude Code
+npx cc-live-monitor           # start the monitor window
+```
+
+Then use Claude Code as usual (`claude`, `claude --continue`, `claude --resume`). The window follows whichever session is active.
+
+Prefer a short command? Install it globally:
+
+```sh
+npm install -g cc-live-monitor
+cc-monitor install
+cc-monitor
+```
+
+To remove it: `npx cc-live-monitor uninstall` (or `cc-monitor uninstall`).
+
+<p align="center">
+  <img src="docs/screenshots/max-plan.png" width="420" alt="cc-monitor on a Max plan: 5-hour limit, weekly limit, context, tokens per minute, models, agents and file changes">
+</p>
+
+| Parallel subagents | Heavy week | API plan *(concept)* |
+|:---:|:---:|:---:|
+| <img src="docs/screenshots/parallel-agents.png" width="260" alt="Four subagents running in parallel"> | <img src="docs/screenshots/weekly-limit.png" width="260" alt="Weekly limit at 81 percent"> | <img src="docs/screenshots/api-cost-concept.png" width="260" alt="Concept of a cost view for API users"> |
+| Six agents, each with its own model and a dot per minute | Weekly limit at 81%, a 200K context window | Design concept only. v0.1 shows usage, not cost |
+
+It shows subscription usage, not dollar cost. No dollar figures appear anywhere in v0.1.
 
 | Section | What it shows |
 |---|---|
@@ -18,24 +47,9 @@ It shows subscription usage, not dollar cost. No dollar figures appear anywhere.
 | Agents | Main plus every subagent, including parallel ones: its model, a dot per minute (running = accent, done = grey), elapsed time |
 | Changes | Files read / edited / written, +/− lines, WRITING while a write is in flight, SAVED after |
 
-## Install
+## What `install` changes
 
-Requires Node 18+ and Claude Code. Works on Windows, macOS and Linux.
-
-```sh
-npx cc-live-monitor install   # wire the hooks + status line into ~/.claude/settings.json
-npx cc-live-monitor           # start the server and open the window
-```
-
-Or install it globally to get a short `cc-monitor` command:
-
-```sh
-npm install -g cc-live-monitor
-cc-monitor install
-cc-monitor
-```
-
-Restart any Claude Code sessions that were already running so they pick up the hooks.
+Requires Node 18+ and Claude Code. Restart any Claude Code sessions that were already running so they pick up the hooks.
 
 `install` first backs up `~/.claude/settings.json` to `~/.cc-monitor/backups/`. It then:
 

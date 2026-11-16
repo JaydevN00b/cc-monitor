@@ -7,3 +7,7 @@ node_modules/
 *.mkv
 *.webm
 photon/
+
+# local originals (copies used by the README live in docs/screenshots/)
+/tweet-screenshots/
+/cc-monitor-*.png
