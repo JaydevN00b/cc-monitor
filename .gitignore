@@ -1,2 +1,9 @@
 node_modules/
 *.log
+
+# not part of cc-monitor
+*.mp4
+*.mov
+*.mkv
+*.webm
+photon/
