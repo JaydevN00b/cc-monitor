@@ -2,6 +2,14 @@
   "name": "cc-monitor",
   "version": "0.1.0",
   "description": "Live dot-matrix session monitor for Claude Code: subscription limits, context, tokens/min, models, agents and file changes in a window next to your terminal.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JaydevN00b/cc-monitor.git"
+  },
+  "homepage": "https://github.com/JaydevN00b/cc-monitor#readme",
+  "bugs": {
+    "url": "https://github.com/JaydevN00b/cc-monitor/issues"
+  },
   "bin": {
     "cc-monitor": "bin/cc-monitor.js"
   },
