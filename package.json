@@ -1,0 +1,34 @@
+{
+  "name": "cc-monitor",
+  "version": "0.1.0",
+  "description": "Live dot-matrix session monitor for Claude Code: subscription limits, context, tokens/min, models, agents and file changes in a window next to your terminal.",
+  "bin": {
+    "cc-monitor": "bin/cc-monitor.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "forwarders/",
+    "public/",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node bin/cc-monitor.js",
+    "test": "node test/smoke.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "monitor",
+    "usage",
+    "statusline",
+    "hooks"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.23.0"
+  }
+}
