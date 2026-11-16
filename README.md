@@ -51,6 +51,11 @@ It shows subscription usage, not dollar cost. No dollar figures appear anywhere 
 
 With several sessions open it's easy to lose track of which one is waiting on you. Each session tab shows its state:
 
+| Another session needs you | This session is blocked |
+|:---:|:---:|
+| <img src="docs/screenshots/needs-you-strip.png" width="380" alt="Alert strip: api-gateway needs you, permission for Bash npm install express-rate-limit, with a VIEW button"> | <img src="docs/screenshots/needs-you-card.png" width="380" alt="Permission request card: Bash, npm install express-rate-limit, requested by rate-limiter, header shows WAITING 02:04"> |
+| Alert strip on every view, with VIEW → to jump there | Permission card with the exact command and the agent that asked |
+
 | Tab | State | Meaning |
 |---|---|---|
 | solid orange, pulsing, with wait time | **NEEDS YOU** | A permission prompt, or Claude is idle waiting for your input. Sorted first |
