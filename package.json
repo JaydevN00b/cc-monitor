@@ -1,6 +1,6 @@
 {
   "name": "cc-live-monitor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Live dot-matrix session monitor for Claude Code: subscription limits, context, tokens/min, models, agents and file changes in a window next to your terminal.",
   "repository": {
     "type": "git",
@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "start": "node bin/cc-monitor.js",
-    "test": "node test/smoke.js"
+    "test": "node test/smoke.js && node --test test/attention.test.js test/agents.test.js"
   },
   "engines": {
     "node": ">=18"

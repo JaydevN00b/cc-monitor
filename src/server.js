@@ -9,8 +9,7 @@ const { paths, readConfig, PORT } = require('./config');
 
 const PUBLIC = path.join(__dirname, '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
-const KEEP_MS = 12 * 3600_000;      // interactive session with a live process: keep while idle up to 12h
-const IDLE_MS = 10 * 60_000;         // sessions we cannot tie to a process (headless): drop after 10 min idle
+const GONE_MS = 30 * 60_000;         // sessions idle this long leave the tab bar (unless a permission is pending)
 const DISCOVER_MS = 15 * 60_000;     // on startup, pick up transcripts touched in the last 15 min
 
 function createServer({ port = PORT, capture = false, log = console.log } = {}) {
@@ -96,7 +95,7 @@ function createServer({ port = PORT, capture = false, log = console.log } = {}) 
   // Liveness: Claude Code writes ~/.claude/sessions/<pid>.json for each interactive session
   // ({ pid, sessionId, ... }). Only those two fields are used; *.key files are never read.
   // A session whose process is gone is dropped, even if the terminal was closed abruptly.
-  // Sessions without a pid file (headless `claude -p`) drop out after IDLE_MS without activity.
+  // Any session idle for GONE_MS leaves the bar, except one still waiting on a permission prompt.
   const pidOf = new Map();
   let livenessAt = 0;
   function alive(pid) {
@@ -122,24 +121,47 @@ function createServer({ port = PORT, capture = false, log = console.log } = {}) 
       else if (pidOf.has(s.id)) markEnded(s); // its pid file disappeared: Claude Code exited
     }
   }
-  function markEnded(s) { if (!s.ended) { s.ended = true; s.dirty = true; } }
+  function markEnded(s) { if (!s.ended) s.endSession(); }
 
   function liveSessions() {
     checkLiveness();
     const now = Date.now();
-    return [...sessions.values()].filter((s) => s.lastActivity && !s.ended
-      && now - s.lastActivity < (pidOf.has(s.id) ? KEEP_MS : IDLE_MS))
-      .sort((a, b) => b.lastActivity - a.lastActivity);
+    return [...sessions.values()].filter((s) => {
+      if (!s.lastActivity || s.ended) return false;
+      const b = s.att.block();
+      if (b && b.reason === 'permission' && pidOf.has(s.id)) return true; // truly blocked, process alive
+      return now - s.lastActivity < GONE_MS;
+    }).sort((a, b) => b.lastActivity - a.lastActivity);
+  }
+
+  // Tabs: sessions that need you first (longest waiting first), then by most recent activity.
+  function tabOrder(list, now) {
+    const sums = list.map((s) => s.summary(now));
+    const needs = sums.filter((x) => x.attention.state === 'needs_you').sort((a, b) => a.attention.since - b.attention.since);
+    return [...needs, ...sums.filter((x) => x.attention.state !== 'needs_you')];
+  }
+
+  let notifyCache = { at: 0, on: false };
+  function notifyOn() {
+    if (Date.now() - notifyCache.at > 2000) notifyCache = { at: Date.now(), on: readConfig().notify === true };
+    return notifyCache.on;
   }
 
   function snapshot(selected) {
+    const now = Date.now();
+    for (const s of sessions.values()) s.reapAgents(now);
     const list = liveSessions();
     const pick = (selected && list.find((s) => s.id === selected)) || list[0] || null;
+    const tabs = tabOrder(list, now);
+    const alerts = tabs.filter((t) => t.attention.state === 'needs_you')
+      .map((t) => ({ id: t.id, project: t.project, since: t.attention.since, ...t.attention.block }));
     return {
       type: 'state',
-      serverNow: Date.now(),
+      serverNow: now,
       auto: !selected || !pick || pick.id !== selected,
-      sessions: list.map((s) => s.summary()),
+      sessions: tabs,
+      alerts,
+      notify: notifyOn(),
       view: pick ? pick.view(detectPlan()) : null,
       plan: detectPlan(),
     };
@@ -175,7 +197,7 @@ function createServer({ port = PORT, capture = false, log = console.log } = {}) 
   }, 1000);
 
   return {
-    server, sessions,
+    server, sessions, snapshot, getSession,
     listen() {
       return new Promise((resolve, reject) => {
         server.once('error', reject);

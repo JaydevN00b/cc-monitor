@@ -19,7 +19,7 @@ run('install');
 let s = JSON.parse(fs.readFileSync(path.join(claudeDir, 'settings.json'), 'utf8'));
 assert.ok(s.statusLine.command.includes('.cc-monitor/bin/statusline.js'));
 assert.strictEqual(s.hooks.PreToolUse.length, 2, 'existing hook kept, ours appended');
-for (const ev of ['SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop', 'Stop', 'SessionEnd']) assert.ok(s.hooks[ev], ev);
+for (const ev of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PermissionRequest', 'Notification', 'SubagentStop', 'Stop', 'SessionEnd']) assert.ok(s.hooks[ev], ev);
 run('install'); // idempotent
 s = JSON.parse(fs.readFileSync(path.join(claudeDir, 'settings.json'), 'utf8'));
 assert.strictEqual(s.hooks.PreToolUse.length, 2, 'no duplicates on reinstall');

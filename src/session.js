@@ -7,8 +7,12 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { Tailer } = require('./tail');
 const { shortModel, family } = require('./models');
+const { Attention } = require('./attention');
 
 const AGENT_TOOLS = new Set(['Agent', 'Task']);
+const BUILTIN_AGENTS = new Set(['general-purpose', 'explore', 'plan', 'statusline-setup', 'claude-code-guide', 'output-style-setup']);
+const STALE_AGENT = 3 * 60_000;   // a subagent whose transcript has been silent this long is done
+const RUN_GAP = 60 * 60_000;      // a gap this long starts a new "run" of the main agent (resumed sessions)
 const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
 const READ_TOOLS = new Set(['Read', 'NotebookRead']);
 const MIN = 60_000;
@@ -47,6 +51,20 @@ class Session {
     this.subTailers = new Map(); // agentId -> Tailer
     this.dirty = true;
     this._gitAt = 0;
+
+    this.att = new Attention();  // needs-you / your-turn / working / idle
+    this.ended = false;
+    this.runStart = null;        // start of the main agent's current run (not the transcript's first line)
+    this._lastActT = 0;
+  }
+
+  // Track the main agent's current run: a gap longer than RUN_GAP starts a new one.
+  _run(t) {
+    if (!t) return;
+    if (!this.runStart) this.runStart = t;
+    else if (t > this._lastActT && t - this._lastActT > RUN_GAP) this.runStart = t;
+    else if (t < this.runStart && this.runStart - t < RUN_GAP) this.runStart = t; // backfill of earlier lines
+    if (t > this._lastActT) this._lastActT = t;
   }
 
   // ---------------------------------------------------------------- helpers
@@ -64,15 +82,17 @@ class Session {
   agentByToolUse(id) { return id ? this.agents.find((a) => a.toolUseId === id) : null; }
   agentById(id) { return id ? this.agents.find((a) => a.agentId === id) : null; }
 
-  ensureSubagent({ toolUseId, agentId, type, description, model, start }) {
+  ensureSubagent({ toolUseId, agentId, type, description, model, start, name, isBuiltIn }) {
     let a = this.agentById(agentId) || this.agentByToolUse(toolUseId);
     if (!a) {
-      a = this._newAgent(agentId ? 'a:' + agentId : 'tu:' + toolUseId, { running: true, start: start || Date.now() });
+      a = this._newAgent(agentId ? 'a:' + agentId : 'tu:' + toolUseId, { running: true, start: start || null });
       this.agents.push(a);
     }
     if (agentId) a.agentId = agentId;
     if (toolUseId) a.toolUseId = toolUseId;
     if (type) a.name = type;
+    if (name && !a.customName) a.customName = name;
+    if (typeof isBuiltIn === 'boolean') a.isBuiltIn = isBuiltIn;
     if (description) a.description = description;
     if (model && !a.modelHint) a.modelHint = model;
     if (start && (!a.start || start < a.start)) a.start = start;
@@ -80,10 +100,25 @@ class Session {
     return a;
   }
 
+  // An agent's end never moves backwards and is never before its start.
   finishAgent(a, t = Date.now()) {
-    if (!a) return;
-    if (a.running || !a.end) { a.running = false; a.end = a.end && a.end < t ? a.end : t; }
+    if (!a || a === this.main) return;
+    if (a.running) {
+      a.running = false;
+      a.end = Math.max(t, a.start || t);
+    } else if (!a.end) a.end = Math.max(t, a.start || t);
     this.dirty = true;
+  }
+
+  // Real name if the payload has one (custom agent type or an explicit name), else "type·id".
+  displayName(a) {
+    if (a === this.main) return 'main';
+    if (a.customName) return String(a.customName);
+    const type = String(a.name || 'agent');
+    const builtIn = typeof a.isBuiltIn === 'boolean' ? a.isBuiltIn : BUILTIN_AGENTS.has(type.toLowerCase());
+    if (!builtIn) return type;
+    const id = String(a.agentId || '').replace(/^a/, '') || String(a.toolUseId || '').replace(/^toolu_\d*/, '');
+    return id ? `${type.toLowerCase()}·${id.slice(0, 3).toLowerCase()}` : type.toLowerCase();
   }
 
   subagentsDir() {
@@ -104,6 +139,7 @@ class Session {
     delete copy.cost;            // never keep dollar figures
     this.status = copy;
     this.statusAt = Date.now();
+    this.att.statusRefresh(this.statusAt);
     this.setCwd(j.cwd || (j.workspace && j.workspace.current_dir));
     if (j.workspace && j.workspace.project_dir) this.projectDir = j.workspace.project_dir;
     this.setTranscript(j.transcript_path);
@@ -123,31 +159,65 @@ class Session {
     const ev = j.hook_event_name;
     const sub = j.agent_id ? this.linkSubagentFromHook(j) : null;
     const who = sub || this.main;
-    who.minutes.add(minuteOf(now));
-    this.touch(now);
+    if (sub) { if (!sub.start) sub.start = now; sub.lastSeen = Math.max(sub.lastSeen || 0, now); }
+    this.dirty = true;
 
-    if (ev === 'SessionEnd') { this.ended = true; this.mainBusy = false; return; }
+    if (ev === 'SessionEnd') { this.endSession(now); return; }
     this.ended = false; // any other event (e.g. a resumed session) makes it live again
-    if (ev === 'SessionStart') {
-      if (!this.startedAt) this.startedAt = now;
-      return;
+
+    // Notifications and Stop are not "work": they must not light up activity dots or extend timers.
+    if (ev !== 'Notification' && ev !== 'Stop' && ev !== 'PermissionRequest') {
+      who.minutes.add(minuteOf(now));
+      this.touch(now);
+      if (!sub) this._run(now);
+    } else if (now > this.lastActivity) {
+      this.lastActivity = now;
     }
-    if (ev === 'Stop') { if (!sub) this.mainBusy = false; return; }
-    if (ev === 'SubagentStop') {
-      if (sub) this.finishAgent(sub, now);
-      if (j.agent_transcript_path && j.agent_id && !this.subTailers.has(j.agent_id)) {
-        this.addSubTailer(j.agent_id, j.agent_transcript_path);
-      }
-      return;
+
+    switch (ev) {
+      case 'SessionStart':
+        if (!this.startedAt) this.startedAt = now;
+        return;
+      case 'UserPromptSubmit':
+        this.mainBusy = true;
+        this.att.prompt(now);
+        return;
+      case 'PermissionRequest':
+        this.att.permission(now, { agentKey: who.key, agentId: j.agent_id || null, agentType: j.agent_type || null,
+          tool: j.tool_name || null, input: j.tool_input || null });
+        return;
+      case 'Notification':
+        this.att.notification(now, j.notification_type, j.message);
+        return;
+      case 'Stop':
+        if (!sub) { this.mainBusy = false; this.att.stop(now, 'main'); }
+        return;
+      case 'SubagentStop':
+        if (sub) { this.finishAgent(sub, now); this.att.subagentStop(now, sub.key); }
+        if (j.agent_transcript_path && j.agent_id && !this.subTailers.has(j.agent_id)) {
+          this.addSubTailer(j.agent_id, j.agent_transcript_path);
+        }
+        return;
+      case 'PreToolUse':
+        if (!sub) this.mainBusy = true;
+        this.att.preTool(now, who.key, j.tool_name, j.tool_input);
+        this.toolStart(j.tool_use_id, j.tool_name, j.tool_input || {}, who.key, now);
+        return;
+      case 'PostToolUse':
+        this.att.hookActivity(now, who.key);
+        this.toolEnd(j.tool_use_id, j.tool_name, j.tool_input || {}, j.tool_response, now);
+        return;
+      default:
     }
-    if (ev === 'PreToolUse') {
-      if (!sub) this.mainBusy = true;
-      this.toolStart(j.tool_use_id, j.tool_name, j.tool_input || {}, who.key, now);
-      return;
-    }
-    if (ev === 'PostToolUse') {
-      this.toolEnd(j.tool_use_id, j.tool_name, j.tool_input || {}, j.tool_response, now);
-    }
+  }
+
+  // Session over (SessionEnd hook or its process is gone): nothing is running or waiting any more.
+  endSession(t = Date.now()) {
+    this.ended = true;
+    this.mainBusy = false;
+    this.att.end();
+    for (const a of this.agents) if (a !== this.main && a.running) this.finishAgent(a, a.lastSeen || t);
+    this.dirty = true;
   }
 
   linkSubagentFromHook(j) {
@@ -157,7 +227,7 @@ class Session {
     const meta = this.readMeta(j.agent_id);
     if (meta && meta.toolUseId) {
       return this.ensureSubagent({ agentId: j.agent_id, toolUseId: meta.toolUseId, type: meta.agentType || j.agent_type,
-        description: meta.description, model: meta.model });
+        description: meta.description, model: meta.model, name: meta.name, isBuiltIn: meta.isBuiltIn });
     }
     // Fallback: oldest still-unlinked running Agent call with the same subagent type.
     a = this.agents.find((x) => x !== this.main && !x.agentId && x.running && (!j.agent_type || x.name === j.agent_type));
@@ -177,7 +247,7 @@ class Session {
     if (!this.toolUses.has(id)) this.toolUses.set(id, { name, input, agent: agentKey });
     if (AGENT_TOOLS.has(name) && agentKey === 'main') {
       this.ensureSubagent({ toolUseId: id, type: input.subagent_type || 'general-purpose',
-        description: input.description, model: input.model, start: t });
+        description: input.description, model: input.model, start: t, name: input.name });
     }
     if (WRITE_TOOLS.has(name) && !this.toolsDone.has(id)) {
       const f = this.file(input.file_path || input.notebook_path);
@@ -259,7 +329,7 @@ class Session {
       const meta = this.readMeta(agentId);
       if (!meta) continue;
       const a = this.ensureSubagent({ agentId, toolUseId: meta.toolUseId, type: meta.agentType,
-        description: meta.description, model: meta.model });
+        description: meta.description, model: meta.model, name: meta.name, isBuiltIn: meta.isBuiltIn });
       if (meta.finished && a.running) this.finishAgent(a, a.lastSeen || Date.now());
       if (!this.subTailers.has(agentId)) this.addSubTailer(agentId, path.join(dir, `agent-${agentId}.jsonl`));
     }
@@ -278,6 +348,19 @@ class Session {
       agent.minutes.add(minuteOf(t));
       agent.lastSeen = Math.max(agent.lastSeen || 0, t);
       if (agent !== this.main && (!agent.start || t < agent.start)) agent.start = t;
+      if (agent === this.main) this._run(t);
+      const newest = t >= this.att.lastActivity - 1000;
+      this.att.activity(t, agent.key);
+      // The main agent's final reply of a turn ends with stop_reason "end_turn": a backup for the Stop
+      // hook (e.g. the server restarted after Stop fired). Only if nothing newer has been seen.
+      if (agent === this.main && e.type === 'assistant' && e.message && e.message.stop_reason === 'end_turn' && newest) {
+        this.att.stop(t, 'main');
+        this.mainBusy = false;
+      }
+      // A finished agent that writes again (e.g. resumed with SendMessage) is running again.
+      if (agent !== this.main && !agent.running && agent.end && t > agent.end + 5000 && Date.now() - t < STALE_AGENT) {
+        agent.running = true; agent.end = null;
+      }
     }
     const m = e.message;
     if (e.type === 'assistant' && m) {
@@ -309,10 +392,24 @@ class Session {
     if (this.mainTailer) this.mainTailer.poll();
     this.scanSubagents();
     for (const tl of this.subTailers.values()) tl.poll();
-    // Safety: a WRITING tag never sticks for more than 5 minutes (e.g. a crashed tool).
     const now = Date.now();
+    this.reapAgents(now);
+    // Safety: a WRITING tag never sticks for more than 5 minutes (e.g. a crashed tool).
     for (const f of this.files.values()) if (f.pending.size && now - f.pendingSince > 5 * MIN) { f.pending.clear(); f.pendingSince = 0; this.dirty = true; }
     this.refreshGit();
+  }
+
+  // A subagent is done when SubagentStop arrives. If it never does (crash, killed terminal, server
+  // restarted mid-run), it is done once its transcript has been silent for STALE_AGENT, unless it is
+  // waiting on a permission prompt. Its end is its last line, so elapsed never keeps growing.
+  reapAgents(now = Date.now()) {
+    for (const a of this.agents) {
+      if (a === this.main || !a.running) continue;
+      if (this.att.blocks.has(a.key)) continue;
+      const last = Math.max(a.lastSeen || 0, a.start || 0);
+      if (!last) { a.start = now; continue; } // no timestamps at all yet: start the clock now
+      if (now - last > STALE_AGENT) this.finishAgent(a, last);
+    }
   }
 
   refreshGit() {
@@ -373,30 +470,43 @@ class Session {
       return [...am.entries()].sort((a, b) => b[1] - a[1])[0][0];
     };
 
+    const attState = this.ended ? 'idle' : this.att.state(now);
+    const mainEnd = attState === 'working' || attState === 'needs_you' ? null : this.lastActivity;
     const agents = this.agents.map((a) => {
       const isMain = a === this.main;
       const modelId = topModel(a.key) || a.model || a.modelHint || (isMain ? mainModelId : null);
+      const blocked = !this.ended && this.att.blocks.has(a.key);
+      const start = isMain ? (this.runStart || this.startedAt) : a.start;
+      const end = isMain ? mainEnd : (a.running ? null : (a.end || a.lastSeen || a.start || null));
       const dots = [];
       for (let i = 21; i >= 0; i--) {
         const m = nowMin - i;
         if (isMain) dots.push(a.minutes.has(m) ? 1 : 0);
         else {
-          const s = a.start ? minuteOf(a.start) : null;
-          const e = a.running ? nowMin : (a.end ? minuteOf(a.end) : (a.lastSeen ? minuteOf(a.lastSeen) : s));
-          dots.push(s != null && m >= s && m <= e ? 1 : 0);
+          const s0 = start ? minuteOf(start) : null;
+          const e0 = a.running ? nowMin : (end ? minuteOf(end) : s0);
+          dots.push(s0 != null && m >= s0 && m <= e0 ? 1 : 0);
         }
       }
       return {
-        name: isMain ? 'main' : String(a.name || 'agent').toLowerCase(),
+        id: a.agentId || a.key,
+        name: this.displayName(a),
+        type: isMain ? 'main' : String(a.name || 'agent'),
         description: a.description || '',
         model: family(modelId) || (modelId ? String(modelId) : null),
-        running: isMain ? (this.mainBusy && now - this.lastActivity < 10 * MIN) : a.running,
+        running: isMain ? (this.mainBusy && attState === 'working') : a.running,
+        blocked,
         main: isMain,
-        start: isMain ? this.startedAt : a.start,
-        end: isMain ? null : (a.running ? null : (a.end || a.lastSeen || null)),
+        start: start || null,
+        end: end || null,
         dots,
       };
     });
+    // main first, then running/blocked (oldest start first), then done agents newest first. Nothing is dropped.
+    const [mainRow, ...subRows] = agents;
+    const live = subRows.filter((a) => a.running || a.blocked).sort((x, y) => (x.start || 0) - (y.start || 0));
+    const done = subRows.filter((a) => !a.running && !a.blocked).sort((x, y) => (y.end || 0) - (x.end || 0));
+    const orderedAgents = [mainRow, ...live, ...done];
 
     const base = this.projectDir || this.cwd || '';
     const files = [...this.files.values()].filter((f) => f.pending.size || f.saved)
@@ -415,7 +525,7 @@ class Session {
       id: this.id,
       project: path.basename(base) || this.id.slice(0, 8),
       sessionName: (st && st.session_name) || null,
-      startedAt: this.startedAt,
+      startedAt: this.runStart || this.startedAt,
       lastActivity: this.lastActivity,
       live: now - this.lastActivity < 5 * MIN,
       plan: plan || null,
@@ -426,15 +536,50 @@ class Session {
       context,
       tpm: { buckets, now: lastMinute },
       models,
-      agents,
+      agents: orderedAgents,
+      agentTotals: { running: live.filter((a) => !a.blocked).length, blocked: live.filter((a) => a.blocked).length, done: done.length },
+      attention: this.attentionView(now),
       changes: { read: this.reads.size, edited, written, files },
     };
   }
 
-  summary() {
+  // What the UI needs to show "needs you": state, how long, and what is being asked.
+  attentionView(now = Date.now()) {
+    const state = this.ended ? 'idle' : this.att.state(now);
+    const b = state === 'needs_you' ? this.att.block() : null;
+    const view = { state, since: state === 'your_turn' ? this.att.yourTurnSince : null, block: null };
+    if (b) {
+      const agent = b.agentKey === 'main' ? this.main : this.agents.find((a) => a.key === b.agentKey);
+      const modelId = agent ? (agent === this.main ? this.mainModel : (agent.model || agent.modelHint)) : null;
+      view.since = b.since;
+      view.block = {
+        reason: b.reason,              // 'permission' | 'input' | 'question'
+        tool: b.tool || null,
+        command: describeInput(b.tool, b.input),
+        agent: agent ? this.displayName(agent) : (b.agentType || 'main'),
+        model: family(modelId) || null,
+        message: b.message || null,
+        count: this.att.blocks.size,
+      };
+    }
+    return view;
+  }
+
+  summary(now = Date.now()) {
     const base = this.projectDir || this.cwd || '';
-    return { id: this.id, project: path.basename(base) || this.id.slice(0, 8), lastActivity: this.lastActivity };
+    return { id: this.id, project: path.basename(base) || this.id.slice(0, 8), lastActivity: this.lastActivity,
+      attention: this.attentionView(now) };
   }
 }
 
-module.exports = { Session, account };
+// "npm install express-rate-limit" for Bash, the file for edits, a short JSON summary otherwise.
+function describeInput(tool, input) {
+  if (!input || typeof input !== 'object') return null;
+  if (typeof input.command === 'string') return input.command;
+  if (input.file_path || input.notebook_path) return input.file_path || input.notebook_path;
+  if (input.url) return input.url;
+  if (input.pattern) return input.pattern;
+  try { const s = JSON.stringify(input); return s.length > 300 ? s.slice(0, 297) + '…' : s; } catch { return null; }
+}
+
+module.exports = { Session, account, describeInput };

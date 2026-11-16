@@ -18,8 +18,12 @@ body{font-family:'Segoe UI Variable Text','Segoe UI',system-ui,-apple-system,san
 .lbl{font-family:'JetBrains Mono','Cascadia Mono',Menlo,Consolas,monospace;font-size:10.5px;font-weight:500;letter-spacing:.14em;color:var(--mute);text-transform:uppercase}
 .w{color:var(--fg)} .m{color:var(--mute)} .a{color:var(--accent)} .b{font-weight:700}
 @keyframes breathe{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,77,26,.7)}100%{box-shadow:0 0 0 7px rgba(255,77,26,0)}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
 .breathe{animation:breathe 1.6s ease-in-out infinite}
-@media (prefers-reduced-motion:reduce){.breathe{animation:none}}
+.pulse{animation:pulse 1.4s ease-out infinite}
+.blink{animation:blink 1.2s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){.breathe,.pulse,.blink{animation:none}}
 #panel{max-width:520px;margin:0 auto;padding:18px 32px 24px;display:flex;flex-direction:column}
 .sep{border-top:1px dotted var(--line);margin:20px 0 0;padding-top:20px}
 .row{display:flex;justify-content:space-between;align-items:baseline}
@@ -28,10 +32,35 @@ body{font-family:'Segoe UI Variable Text','Segoe UI',system-ui,-apple-system,san
 .chip.ghost{color:var(--mute)}
 svg{display:block}
 .trunc{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
-.tab{font-family:'JetBrains Mono','Cascadia Mono',Menlo,Consolas,monospace;font-size:10px;letter-spacing:.06em;padding:2px 7px;border-radius:3px;border:1px solid #262626;background:transparent;color:var(--mute);cursor:pointer;max-width:150px}
-.tab:hover{color:var(--fg);border-color:var(--chip)}
-.tab.on{color:var(--fg);border-color:var(--fg2)}
+.hdot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block;flex:none}
+/* session tabs (design-needs-you.html) */
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.tab{font-family:'JetBrains Mono','Cascadia Mono',Menlo,Consolas,monospace;display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:700;letter-spacing:.06em;padding:3px 8px;border-radius:3px;border:1px solid #3A3A3A;background:transparent;color:var(--fg2);cursor:pointer;max-width:200px}
+.tab .trunc{max-width:150px}
+.tab:hover{border-color:var(--fg2)}
+.tab.on{border-color:var(--fg);color:var(--fg)}
+.tab.needs{background:var(--accent);color:#000;border-color:var(--accent);padding:4px 9px;gap:8px}
+.tab.needs .wait{opacity:.7}
+.tab.turn{border-color:var(--accent);color:var(--accent)}
+.tab.turn.on{box-shadow:inset 0 0 0 1px var(--accent)}
+.tab.idle{border-color:#262626;color:var(--mute)}
+.tab.idle.on{border-color:var(--mute)}
+.tdot{width:6px;height:6px;border-radius:50%;background:var(--fg);flex:none;display:inline-block}
+.tab.needs .tdot{width:7px;height:7px;background:#000}
+.tdot.hollow{width:7px;height:7px;background:transparent;border:1.5px solid var(--accent)}
+.tdot.off{background:#3A3A3A}
+/* alert strip + request card */
+.alert{background:var(--accent);color:#000;border-radius:4px;padding:12px 14px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;align-items:center}
+.alert .atitle{font-size:12px;font-weight:700;letter-spacing:.1em;display:flex;align-items:center;gap:8px;min-width:0}
+.alert .atitle .tdot{width:8px;height:8px}
+.alert .adetail{font-size:12px;opacity:.8}
+.alert .view{grid-row:span 2;grid-column:2;grid-row-start:1;font-size:11px;font-weight:700;letter-spacing:.1em;background:#000;color:var(--accent);border:0;border-radius:3px;padding:9px 12px;cursor:pointer}
+.card{border:1px solid var(--accent);border-radius:4px;padding:18px 18px 16px}
+.code{font-size:13px;color:var(--fg2);margin-top:6px;padding:10px 12px;background:#0E0E0E;border-radius:3px;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto}
+.enable{align-self:flex-start;font-size:10.5px;font-weight:700;letter-spacing:.1em;background:transparent;color:var(--fg2);border:1px solid var(--chip);border-radius:3px;padding:6px 10px;cursor:pointer}
+/* agents: keep every agent, scroll after ~12 rows */
+.agents{max-height:318px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#333 transparent;padding-right:2px}
+.agents::-webkit-scrollbar{width:6px}.agents::-webkit-scrollbar-thumb{background:#333;border-radius:3px}
 .empty{margin-top:40px;line-height:1.7;font-size:12px}
 code{font-family:'JetBrains Mono','Cascadia Mono',Menlo,Consolas,monospace;color:var(--fg);background:#111;padding:1px 5px;border-radius:3px}
 </style>
@@ -39,6 +68,7 @@ code{font-family:'JetBrains Mono','Cascadia Mono',Menlo,Consolas,monospace;color
 <body>
 <main id="panel" aria-label="cc-monitor live panel" aria-live="off">
   <div id="s-header"></div>
+  <div id="s-alert"></div>
   <div id="s-five"></div>
   <div id="s-week"></div>
   <div id="s-ctx"></div>
@@ -46,6 +76,7 @@ code{font-family:'JetBrains Mono','Cascadia Mono',Menlo,Consolas,monospace;color
   <div id="s-agents"></div>
   <div id="s-changes"></div>
 </main>
+<script src="/glyphs.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

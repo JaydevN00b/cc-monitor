@@ -26,6 +26,7 @@ function help() {
   cc-monitor install      add the hooks + status line to ~/.claude/settings.json (backed up first)
   cc-monitor uninstall    remove them again and restore your previous status line
   cc-monitor plan <name>  set the plan chip manually (pro | max | team | api | auto)
+  cc-monitor notify on|off  desktop notification when a session needs you (off by default)
   cc-monitor status       show whether it is installed and running
 
   options:  --no-open (server only)   --capture (log raw payloads to ${paths.capture})
@@ -83,6 +84,15 @@ async function main() {
       if (!v || v === 'auto') delete cfg.plan; else cfg.plan = v;
       writeConfig(cfg);
       console.log(cfg.plan ? `plan set to ${cfg.plan.toUpperCase()}` : 'plan: auto-detect');
+      return;
+    }
+    case 'notify': {
+      const v = (args[1] || '').toLowerCase();
+      const cfg = readConfig();
+      if (v === 'on' || v === 'off') { cfg.notify = v === 'on'; writeConfig(cfg); }
+      else if (v) { console.error('usage: cc-monitor notify on|off'); process.exit(1); }
+      console.log(`desktop notifications: ${cfg.notify ? 'ON' : 'OFF'}`);
+      if (cfg.notify) console.log('They fire once per block, only while the monitor window is not focused.\nThe first time, click "ENABLE NOTIFICATIONS" in the monitor window to allow them.');
       return;
     }
     case 'status': {

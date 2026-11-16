@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { paths, readConfig, writeConfig } = require('./config');
 
-const HOOK_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop', 'Stop', 'SessionEnd'];
+const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PermissionRequest', 'Notification', 'SubagentStop', 'Stop', 'SessionEnd'];
 const MARKER = 'cc-monitor'; // every command we install contains this path segment
 
 function q(p) { return '"' + p.replace(/\\/g, '/') + '"'; }
